@@ -1,57 +1,52 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
+	"flag"
 	"log"
+	"math/rand"
 	"net/http"
+	"path/filepath"
+	"sync"
+	"text/template"
+	"time"
 )
 
-type Person struct {
-	Name string
-	Age  int
+type templateHandler struct {
+	once     sync.Once
+	filename string
+	templ    *template.Template
 }
 
-var people []Person
+// берём шаблон с нашего сервера
+func (t *templateHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	t.once.Do(func() {
+		t.templ = template.Must(template.ParseFiles(filepath.Join("templates", t.filename)))
+	})
+
+	t.templ.Execute(w, req)
+}
 
 func main() {
-	http.HandleFunc("/people", peopleHandler)
-	http.HandleFunc("/health", healthCheckHandler)
+	rand.Seed(time.Now().UnixNano())
+	var addr = flag.String("addr", ":8081", "Addr of the app")
+	flag.Parse()
 
-	log.Println("Server start listening on port 8081")
-	err := http.ListenAndServe("localhost:8081", nil)
-	if err != nil {
-		log.Fatal(err)
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
+	http.Handle("/", &templateHandler{filename: "index.html"})
+	http.Handle("/chat", &templateHandler{filename: "chat.html"})
+
+	http.HandleFunc("/room", func(w http.ResponseWriter, r *http.Request) {
+		roomName := r.URL.Query().Get("room")
+		if roomName == "" {
+			http.Error(w, "Room name required", http.StatusBadRequest)
+			return
+		}
+		realRoom := getRoom(roomName)
+		realRoom.ServeHTTP(w, r)
+	})
+
+	log.Println("starting webserver on ", *addr)
+	if err := http.ListenAndServe(*addr, nil); err != nil {
+		log.Fatal("ListenAndServe:", err)
 	}
-}
-
-func peopleHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		getPeople(w, r)
-	case http.MethodPost:
-		postPerson(w, r)
-	default:
-		http.Error(w, "Invalid htttp method", http.StatusMethodNotAllowed)
-	}
-}
-
-func getPeople(w http.ResponseWriter, r *http.Request) {
-	json.NewEncoder(w).Encode(people)
-	fmt.Fprint(w, "get people: '%v'", people)
-}
-
-func postPerson(w http.ResponseWriter, r *http.Request) {
-	var person Person
-	err := json.NewDecoder(r.Body).Decode(&person)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-
-	people = append(people, person)
-	fmt.Fprint(w, "post new person: '%v'", person)
-}
-
-func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprint(w, "http web-server works correctly")
 }
